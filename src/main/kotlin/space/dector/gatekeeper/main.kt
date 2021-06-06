@@ -11,6 +11,7 @@ import org.http4k.core.Uri
 import org.http4k.core.body.form
 import org.http4k.core.cookie.Cookie
 import org.http4k.core.cookie.cookie
+import org.http4k.core.query
 import org.http4k.server.Http4kServer
 import org.http4k.server.Netty
 import org.http4k.server.asServer
@@ -49,9 +50,22 @@ fun main() {
     )
 
     val loginManager = LoginManager(
-        emailService = EmailService(),
+        emailService = {
+            EmailService(
+                senderEmail = config.senderEmail,
+                serviceName = config.serviceName,
+                sendGridApiKey = config.sendGridApiKey,
+            )
+        },
         accept = config.accept,
         loginRepo = LoginRepo(config.loginDataFolder),
+        loginUrlBuilder = { code: String ->
+            Uri.of(config.hostUrl)
+                .port(if (config.port != 80) config.port else null)
+                .path(ServicePage.Login.path)
+                .query("code", code)
+                .toString()
+        }
     )
 
     val handler = { request: Request ->
@@ -60,7 +74,7 @@ fun main() {
         when (interceptionResult) {
             InterceptionResult.NotAuthorized -> {
                 Response(Status.TEMPORARY_REDIRECT)
-                    .header("Location", "/auth/login")
+                    .header("Location", ServicePage.Login.path)
             }
             InterceptionResult.Ok.ForContent -> {
                 respondWithFileContent(request.uri, config.servingFolder)
@@ -104,10 +118,16 @@ internal fun loadServerConfigurationOrFail(): ServerConfig {
 
     val config = ServerConfig(
         port = json["port"]?.asInt() ?: 9090,
-        host = json["host"]?.asString() ?: error("Server host not specified"),
+        hostUrl = json["hostUrl"]?.asString() ?: error("Server host not specified"),
+        serviceName = json["serviceName"]?.asString() ?: "HAL Gatekeeper",
+        senderEmail = json["senderEmail"]?.asString() ?: error("'serverEmail' not specified"),
         servingFolder = (json["servingFolder"]?.asString() ?: "public").let(::Path),
         dataFolder = (json["dataFolder"]?.asString() ?: "data").let(::Path),
-        jwtSecret = json["jwtSecret"]?.asString() ?: error("JWT secret not specified"),
+        jwtSecret = json["jwtSecret"]?.asString() ?: error("'jwtSecret' not specified"),
+        sendGridApiKey = json["sendGridApiKey"]?.asString() ?: run {
+            Logger.warn { "SendGrid API Key not specified - email will not be sent" }
+            null
+        },
         accept = json["accept"]?.asObject()?.let { obj ->
             AcceptConfig(
                 hosts = obj["hosts"]?.asArray()?.map { it.asString() } ?: emptyList(),
@@ -124,10 +144,13 @@ internal fun loadServerConfigurationOrFail(): ServerConfig {
 
 data class ServerConfig(
     val port: Int,
-    val host: String,
+    val hostUrl: String,
+    val serviceName: String,
+    val senderEmail: String,
     val servingFolder: Path,
     val dataFolder: Path,
     val jwtSecret: String,
+    val sendGridApiKey: String?,
     val accept: AcceptConfig,
 )
 
@@ -340,9 +363,10 @@ private fun loginPagePost(email: String?, loginManager: LoginManager): Response 
 }
 
 class LoginManager(
-    private val emailService: EmailService,
+    private val emailService: () -> EmailService,
     private val loginRepo: LoginRepo,
     private val accept: AcceptConfig,
+    private val loginUrlBuilder: (code: String) -> String,
 ) {
 
     // See OWASP: https://owasp.org/www-community/OWASP_Validation_Regex_Repository
@@ -361,9 +385,9 @@ class LoginManager(
             (host in accept.hosts) || (email in accept.emails)
         if (isEmailAcceptable) {
             val code = createCodeFor(email)
-            val loginUrl = buildLoginUrl(code)
+            val loginUrl = loginUrlBuilder(code)
 
-            emailService.sendLoginInvitationFor(email, loginUrl)
+            emailService().sendLoginInvitationFor(email, loginUrl)
 
             return CodeRequestResult.Sent
         } else return CodeRequestResult.DeniedEmail
@@ -383,26 +407,12 @@ class LoginManager(
         return UUID.randomUUID().toString()
             .also { code -> loginRepo.saveCodeFor(email, code) }
     }
-
-    private fun buildLoginUrl(code: String): String {
-        // TODO
-        return "http://localhost:9090/auth/login?code=$code"
-    }
 }
 
 sealed class CodeRequestResult {
     object Sent : CodeRequestResult()
     object InvalidEmail : CodeRequestResult()
     object DeniedEmail : CodeRequestResult()
-}
-
-class EmailService {
-
-    fun sendLoginInvitationFor(email: String, loginUrl: String) {
-        // TODO send real email
-        println("=== $email ===")
-        println("Login with: $loginUrl")
-    }
 }
 
 private val rootPath = Path("/")

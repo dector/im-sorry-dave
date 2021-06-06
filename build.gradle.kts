@@ -19,6 +19,8 @@ dependencies {
 
     implementation("com.auth0:java-jwt:3.16.0")
 
+    implementation("com.sendgrid:sendgrid-java:4.0.1")
+
     implementation("org.jetbrains.kotlinx:kotlinx-html-jvm:0.7.3")
 }
 

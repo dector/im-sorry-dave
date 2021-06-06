@@ -1,12 +1,17 @@
 {
   port: 9090
-  host: localhost
+  hostUrl: http://localhost
   jwtSecret: weak-secret
+
+  serviceName: HAL Gatekeeper
+  senderEmail: noreply@example.com
+  # sendGridApiKey: AABBCC
 
   servingFolder: public
   dataFolder: data
 
   accept: {
+    # emails: []
     hosts: [ "example.com" ]
   }
 }
