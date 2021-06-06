@@ -446,7 +446,10 @@ class UsersRepo(
     }
 
     fun grantAccessTo(email: String) {
-        dataFolder.resolve(email).createFile()
+        dataFolder.resolve(email)
+            // User already has access
+            .takeIf { it.notExists() }
+            ?.createFile()
         reloadCache()
     }
 
