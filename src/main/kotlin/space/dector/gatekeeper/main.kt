@@ -163,9 +163,11 @@ private fun respondWithFileContent(uri: Uri, servingFolder: Path): Response {
             .let { if (it.isDirectory()) it.resolve("index.html") else it }
     }
 
-    if (!Files.exists(file))
+    if (!Files.exists(file)) {
+        Logger.warn { "Uri '$uri' not found (expected file: '$file')." }
         return Response(Status.NOT_FOUND)
             .body("'$uri' not found on this server")
+    }
 
     return Response(Status.OK)
         .header("Content-Type", file.contentTypeOrDefault())
