@@ -61,7 +61,7 @@ fun main() {
         loginRepo = LoginRepo(config.loginDataFolder),
         loginUrlBuilder = { code: String ->
             Uri.of(config.hostUrl)
-                .port(if (config.port != 80) config.port else null)
+                .port(if (config.publicPort != 80) config.publicPort else null)
                 .path(ServicePage.Login.path)
                 .query("code", code)
                 .toString()
@@ -116,8 +116,10 @@ internal fun loadServerConfigurationOrFail(): ServerConfig {
         .readHjson(configFile.reader())
         .asObject()
 
+    val port = json["port"]?.asInt() ?: 9090
     val config = ServerConfig(
-        port = json["port"]?.asInt() ?: 9090,
+        port = port,
+        publicPort = json["publicPort"]?.asInt() ?: port,
         hostUrl = json["hostUrl"]?.asString() ?: error("Server host not specified"),
         serviceName = json["serviceName"]?.asString() ?: "HAL Gatekeeper",
         senderEmail = json["senderEmail"]?.asString() ?: error("'serverEmail' not specified"),
@@ -144,6 +146,7 @@ internal fun loadServerConfigurationOrFail(): ServerConfig {
 
 data class ServerConfig(
     val port: Int,
+    val publicPort: Int?,
     val hostUrl: String,
     val serviceName: String,
     val senderEmail: String,
