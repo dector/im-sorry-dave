@@ -347,7 +347,7 @@ class LoginManager(
 
     // See OWASP: https://owasp.org/www-community/OWASP_Validation_Regex_Repository
     private val emailRegex by lazy {
-        "^([a-zA-Z0-9_+&*-]+(?:\\.[a-zA-Z0-9_+&*-]+))*@((?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,7})$"
+        "^([a-zA-Z0-9_+&*-]+(?:\\.[a-zA-Z0-9_+&*-]+)*)@((?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,7})$"
             .toRegex()
     }
 
