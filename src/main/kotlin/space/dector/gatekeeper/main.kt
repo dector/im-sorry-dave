@@ -150,9 +150,7 @@ private class AccessManager(
 
     private val jwtTools = JwtTools(jwtSecret)
 
-    private val allowedUsers = listOf<String>(
-        "dan@example.com",
-    )
+    private val allowedUsers = mutableSetOf<String>()
 
     fun verify(token: String): Boolean {
         val userEmail = jwtTools.parseUserEmail(token)
@@ -162,6 +160,7 @@ private class AccessManager(
     }
 
     fun createTokenFor(email: String): String? {
+        allowedUsers += email
         return jwtTools.createToken(email)
     }
 }
