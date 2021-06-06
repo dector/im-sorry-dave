@@ -9,6 +9,5 @@
 out/
 build/
 
-# Kotlin test
-.kotlintest/
-
+data/
+config/prod.hjson

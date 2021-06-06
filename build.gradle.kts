@@ -9,6 +9,9 @@ dependencies {
     implementation("org.http4k:http4k-core")
     implementation("org.http4k:http4k-server-netty")
 
+    implementation("org.tinylog:tinylog-api-kotlin:2.3.2")
+    implementation("org.tinylog:tinylog-impl:2.3.2")
+
     implementation("org.hjson:hjson:3.0.0")
 
     implementation("com.auth0:java-jwt:3.16.0")

@@ -14,6 +14,7 @@ import org.http4k.core.cookie.cookie
 import org.http4k.server.Http4kServer
 import org.http4k.server.Netty
 import org.http4k.server.asServer
+import org.tinylog.kotlin.Logger
 import space.dector.gatekeeper.pages.InfoType
 import space.dector.gatekeeper.pages.buildInfoPage
 import space.dector.gatekeeper.pages.buildLoginPage
@@ -53,7 +54,7 @@ fun main() {
         loginRepo = LoginRepo(config.loginDataFolder),
     )
 
-    val server = { request: Request ->
+    val handler = { request: Request ->
         val interceptionResult = interceptRequest(request, accessManager)
 
         when (interceptionResult) {
@@ -71,6 +72,16 @@ fun main() {
                 }
             }
         }
+    }
+
+    val server = { request: Request ->
+        runCatching { handler(request) }
+            .onFailure { err ->
+                Logger.error(err) { "Server error" }
+            }
+            .getOrNull()
+            ?: Response(Status.INTERNAL_SERVER_ERROR)
+                .body("Internal server error :(")
     }.asServer(Netty(port = config.port)).start()
 
     println("Server started at http://localhost:${config.port}")
@@ -402,8 +413,16 @@ class UsersRepo(
     private val dataFolder: Path,
 ) {
 
+    init {
+        dataFolder.createDirectories()
+    }
+
     private val cacheLock = ReentrantReadWriteLock()
     private val cache = mutableListOf<String>()
+
+    init {
+        reloadCache()
+    }
 
     fun isAccessGranted(email: String): Boolean {
         return cacheLock.read {
@@ -429,6 +448,10 @@ class UsersRepo(
 class LoginRepo(
     private val dataFolder: Path,
 ) {
+
+    init {
+        dataFolder.createDirectories()
+    }
 
     fun getEmailForCode(code: String): String? {
         return dataFolder.resolve(code)
