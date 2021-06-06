@@ -1,7 +1,10 @@
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     kotlin("jvm") version "1.5.10"
+    application
+    id("com.github.johnrengelman.shadow") version "7.0.0"
 }
 
 dependencies {
@@ -34,4 +37,12 @@ tasks.withType<KotlinCompile> {
 
 val test by tasks.getting(Test::class) {
     useJUnitPlatform()
+}
+
+application {
+    mainClass.set("space.dector.gatekeeper.MainKt")
+}
+
+tasks.named<ShadowJar>("shadowJar") {
+    archiveFileName.set("gatekeeper.jar")
 }
