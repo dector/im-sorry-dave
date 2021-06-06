@@ -1,19 +1,24 @@
-package space.dector.project
+package space.dector.gatekeeper
 
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
+import org.http4k.core.Method
 import org.http4k.core.Request
 import org.http4k.core.Response
 import org.http4k.core.Status
 import org.http4k.core.Uri
+import org.http4k.core.body.form
 import org.http4k.core.cookie.Cookie
-import org.http4k.core.cookie.SameSite
 import org.http4k.core.cookie.cookie
 import org.http4k.server.Http4kServer
 import org.http4k.server.Netty
 import org.http4k.server.asServer
+import space.dector.gatekeeper.pages.InfoType
+import space.dector.gatekeeper.pages.buildInfoPage
+import space.dector.gatekeeper.pages.buildLoginPage
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.UUID
 import kotlin.concurrent.thread
 import kotlin.io.path.Path
 import kotlin.io.path.extension
@@ -35,6 +40,12 @@ fun main() {
         jwtSecret = jwtSecret,
     )
 
+    val loginManager = LoginManager(
+        emailService = EmailService(),
+        // TODO remove
+        allowedHosts = listOf("example.com"),
+    )
+
     val config = Netty(port = port)
     val server = { request: Request ->
         val interceptionResult = interceptRequest(request, accessManager)
@@ -50,7 +61,7 @@ fun main() {
             is InterceptionResult.Ok.ForService -> {
                 when (interceptionResult.page) {
                     ServicePage.Login ->
-                        respondWithLoginPage(request, accessManager)
+                        respondWithLoginPage(request, accessManager, loginManager)
                 }
             }
         }
@@ -182,9 +193,32 @@ class JwtTools(
     }
 }
 
-private fun respondWithLoginPage(request: Request, accessManager: AccessManager): Response {
-    val tokenToSet = request.query("code")
-        ?.let { code -> getEmailForLoginCodeOrNull(code) }
+private fun respondWithLoginPage(
+    request: Request,
+    accessManager: AccessManager,
+    loginManager: LoginManager,
+): Response {
+    return when (request.method) {
+        Method.GET ->
+            loginPageGet(
+                code = request.query("code"),
+                accessManager = accessManager,
+                loginManager = loginManager,
+            )
+        Method.POST ->
+            loginPagePost(
+                email = request.form("email"),
+                loginManager = loginManager,
+            )
+        else ->
+            Response(Status.TEMPORARY_REDIRECT)
+                .header("Location", "/")
+    }
+}
+
+private fun loginPageGet(code: String?, accessManager: AccessManager, loginManager: LoginManager): Response {
+    val tokenToSet = code
+        ?.let(loginManager::getEmailForCode)
         ?.let { email -> accessManager.createTokenFor(email) }
 
     return if (tokenToSet != null) {
@@ -201,16 +235,108 @@ private fun respondWithLoginPage(request: Request, accessManager: AccessManager)
             )
     } else {
         Response(Status.OK)
-            .body("TODO: login")
+            .body(buildLoginPage())
     }
 }
 
-// TODO use storage
-private fun getEmailForLoginCodeOrNull(code: String): String? {
-    // TODO fetch values from storage
-    val data = mapOf(
-        "1234" to "dan@example.com",
-    )
+private fun loginPagePost(email: String?, loginManager: LoginManager): Response {
+    email ?: return Response(Status.TEMPORARY_REDIRECT)
+        .header("Location", "/")
 
-    return data[code]
+    return when (loginManager.createLoginFor(email)) {
+        CodeRequestResult.Sent -> {
+            Response(Status.OK)
+                .body(
+                    buildInfoPage(
+                        text = "Check your mailbox on $email for login link.",
+                        type = InfoType.Success,
+                    )
+                )
+        }
+        CodeRequestResult.InvalidEmail -> {
+            Response(Status.BAD_REQUEST)
+                .body(
+                    buildLoginPage(
+                        error = "Email is not valid",
+                    )
+                )
+        }
+        CodeRequestResult.DeniedEmail -> {
+            Response(Status.FORBIDDEN)
+                .body(
+                    buildInfoPage(
+                        text = "Sorry, you can't access content with this email",
+                        type = InfoType.Error,
+                    )
+                )
+        }
+    }
+}
+
+class LoginManager(
+    private val emailService: EmailService,
+    private val allowedEmails: List<String> = emptyList(),
+    private val allowedHosts: List<String> = emptyList(),
+) {
+
+    // See OWASP: https://owasp.org/www-community/OWASP_Validation_Regex_Repository
+    private val emailRegex by lazy {
+        "^([a-zA-Z0-9_+&*-]+(?:\\.[a-zA-Z0-9_+&*-]+))*@((?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,7})$"
+            .toRegex()
+    }
+
+    // TODO use persistent storage
+    private val accessCodesStorage = mutableMapOf<String, String>()
+
+    fun createLoginFor(email: String): CodeRequestResult {
+        val match = emailRegex.find(email)
+            ?: return CodeRequestResult.InvalidEmail
+
+        val (user, host) = match.destructured
+
+        val isEmailAcceptable =
+            (host in allowedHosts) || (email in allowedEmails)
+        if (isEmailAcceptable) {
+            val code = createCodeFor(email)
+            val loginUrl = buildLoginUrl(code)
+
+            emailService.sendLoginInvitationFor(email, loginUrl)
+
+            return CodeRequestResult.Sent
+        } else return CodeRequestResult.DeniedEmail
+    }
+
+    fun getEmailForCode(code: String?): String? {
+        code ?: return null
+
+        return accessCodesStorage
+            .entries
+            .firstOrNull { (_, storedCode) -> storedCode == code }
+            ?.key
+    }
+
+    private fun createCodeFor(email: String): String {
+        return UUID.randomUUID().toString()
+            .also { accessCodesStorage[email] = it }
+    }
+
+    private fun buildLoginUrl(code: String): String {
+        // TODO
+        return "http://localhost:9090/auth/login?code=$code"
+    }
+}
+
+sealed class CodeRequestResult {
+    object Sent : CodeRequestResult()
+    object InvalidEmail : CodeRequestResult()
+    object DeniedEmail : CodeRequestResult()
+}
+
+class EmailService {
+
+    fun sendLoginInvitationFor(email: String, loginUrl: String) {
+        // TODO send real email
+        println("=== $email ===")
+        println("Login with: $loginUrl")
+    }
 }
