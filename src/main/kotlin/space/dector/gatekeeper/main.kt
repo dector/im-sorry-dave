@@ -2,6 +2,7 @@ package space.dector.gatekeeper
 
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
+import org.hjson.JsonValue
 import org.http4k.core.Method
 import org.http4k.core.Request
 import org.http4k.core.Response
@@ -19,34 +20,39 @@ import space.dector.gatekeeper.pages.buildLoginPage
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
 import kotlin.concurrent.thread
+import kotlin.concurrent.write
 import kotlin.io.path.Path
+import kotlin.io.path.createDirectories
+import kotlin.io.path.createFile
+import kotlin.io.path.exists
 import kotlin.io.path.extension
 import kotlin.io.path.inputStream
 import kotlin.io.path.isDirectory
+import kotlin.io.path.moveTo
+import kotlin.io.path.name
+import kotlin.io.path.notExists
+import kotlin.io.path.readText
+import kotlin.io.path.reader
+import kotlin.io.path.writeText
 
 
 fun main() {
-    val port = System.getenv("GATEKEEPER_PORT")
-        ?.toIntOrNull()
-        ?: 9090
-    val servingFolder = (System.getenv("GATEKEEPER_FOLDER")
-        ?: "public")
-        .let(::Path)
-    val jwtSecret = System.getenv("GATEKEEPER_JWT_SECRET")
-        ?: error("JWT secret is not defined: GATEKEEPER_JWT_SECRET not found.")
+    val config = loadServerConfigurationOrFail()
 
     val accessManager = AccessManager(
-        jwtSecret = jwtSecret,
+        jwtSecret = config.jwtSecret,
+        usersRepo = UsersRepo(config.usersDataFolder),
     )
 
     val loginManager = LoginManager(
         emailService = EmailService(),
-        // TODO remove
-        allowedHosts = listOf("example.com"),
+        accept = config.accept,
+        loginRepo = LoginRepo(config.loginDataFolder),
     )
 
-    val config = Netty(port = port)
     val server = { request: Request ->
         val interceptionResult = interceptRequest(request, accessManager)
 
@@ -56,7 +62,7 @@ fun main() {
                     .header("Location", "/auth/login")
             }
             InterceptionResult.Ok.ForContent -> {
-                respondWithFileContent(request.uri, servingFolder)
+                respondWithFileContent(request.uri, config.servingFolder)
             }
             is InterceptionResult.Ok.ForService -> {
                 when (interceptionResult.page) {
@@ -65,13 +71,62 @@ fun main() {
                 }
             }
         }
-    }.asServer(config).start()
+    }.asServer(Netty(port = config.port)).start()
 
-    println("Server started at http://localhost:$port")
+    println("Server started at http://localhost:${config.port}")
 
     server.addShutdownHook()
     server.block()
 }
+
+internal fun loadServerConfigurationOrFail(): ServerConfig {
+    val configFile = System.getenv("GATEKEEPER_CONFIG_FILE")
+        ?.let(::Path)
+        ?: error("GATEKEEPER_CONFIG_FILE not specified.")
+
+    if (Files.notExists(configFile))
+        error("Config file '$configFile' doesn't exist.")
+
+    val json = JsonValue
+        .readHjson(configFile.reader())
+        .asObject()
+
+    val config = ServerConfig(
+        port = json["port"]?.asInt() ?: 9090,
+        host = json["host"]?.asString() ?: error("Server host not specified"),
+        servingFolder = (json["servingFolder"]?.asString() ?: "public").let(::Path),
+        dataFolder = (json["dataFolder"]?.asString() ?: "data").let(::Path),
+        jwtSecret = json["jwtSecret"]?.asString() ?: error("JWT secret not specified"),
+        accept = json["accept"]?.asObject()?.let { obj ->
+            AcceptConfig(
+                hosts = obj["hosts"]?.asArray()?.map { it.asString() } ?: emptyList(),
+                emails = obj["emails"]?.asArray()?.map { it.asString() } ?: emptyList(),
+            )
+        } ?: AcceptConfig(),
+    )
+
+    if (config.dataFolder.notExists())
+        config.dataFolder.createDirectories()
+
+    return config
+}
+
+data class ServerConfig(
+    val port: Int,
+    val host: String,
+    val servingFolder: Path,
+    val dataFolder: Path,
+    val jwtSecret: String,
+    val accept: AcceptConfig,
+)
+
+data class AcceptConfig(
+    val hosts: List<String> = emptyList(),
+    val emails: List<String> = emptyList(),
+)
+
+val ServerConfig.usersDataFolder: Path get() = dataFolder.resolve("granted")
+val ServerConfig.loginDataFolder: Path get() = dataFolder.resolve("requested")
 
 private fun interceptRequest(
     request: Request,
@@ -146,21 +201,19 @@ private fun Path.contentTypeOrDefault(): String {
 
 private class AccessManager(
     jwtSecret: String,
+    private val usersRepo: UsersRepo,
 ) {
-
     private val jwtTools = JwtTools(jwtSecret)
-
-    private val allowedUsers = mutableSetOf<String>()
 
     fun verify(token: String): Boolean {
         val userEmail = jwtTools.parseUserEmail(token)
             ?: return false
 
-        return userEmail in allowedUsers
+        return usersRepo.isAccessGranted(userEmail)
     }
 
     fun createTokenFor(email: String): String? {
-        allowedUsers += email
+        usersRepo.grantAccessTo(email)
         return jwtTools.createToken(email)
     }
 }
@@ -215,8 +268,10 @@ private fun respondWithLoginPage(
 }
 
 private fun loginPageGet(code: String?, accessManager: AccessManager, loginManager: LoginManager): Response {
+    // TODO rewrite this part. It's difficult to understand
     val tokenToSet = code
         ?.let(loginManager::getEmailForCode)
+        ?.also { loginManager.markCodeAsUsed(code) }
         ?.let { email -> accessManager.createTokenFor(email) }
 
     return if (tokenToSet != null) {
@@ -273,8 +328,8 @@ private fun loginPagePost(email: String?, loginManager: LoginManager): Response 
 
 class LoginManager(
     private val emailService: EmailService,
-    private val allowedEmails: List<String> = emptyList(),
-    private val allowedHosts: List<String> = emptyList(),
+    private val loginRepo: LoginRepo,
+    private val accept: AcceptConfig,
 ) {
 
     // See OWASP: https://owasp.org/www-community/OWASP_Validation_Regex_Repository
@@ -283,9 +338,6 @@ class LoginManager(
             .toRegex()
     }
 
-    // TODO use persistent storage
-    private val accessCodesStorage = mutableMapOf<String, String>()
-
     fun createLoginFor(email: String): CodeRequestResult {
         val match = emailRegex.find(email)
             ?: return CodeRequestResult.InvalidEmail
@@ -293,7 +345,7 @@ class LoginManager(
         val (user, host) = match.destructured
 
         val isEmailAcceptable =
-            (host in allowedHosts) || (email in allowedEmails)
+            (host in accept.hosts) || (email in accept.emails)
         if (isEmailAcceptable) {
             val code = createCodeFor(email)
             val loginUrl = buildLoginUrl(code)
@@ -307,15 +359,16 @@ class LoginManager(
     fun getEmailForCode(code: String?): String? {
         code ?: return null
 
-        return accessCodesStorage
-            .entries
-            .firstOrNull { (_, storedCode) -> storedCode == code }
-            ?.key
+        return loginRepo.getEmailForCode(code)
+    }
+
+    fun markCodeAsUsed(code: String) {
+        loginRepo.markCodeAsUsed(code)
     }
 
     private fun createCodeFor(email: String): String {
         return UUID.randomUUID().toString()
-            .also { accessCodesStorage[email] = it }
+            .also { code -> loginRepo.saveCodeFor(email, code) }
     }
 
     private fun buildLoginUrl(code: String): String {
@@ -344,3 +397,57 @@ fun Uri.toSecureRelativePath(): Path =
     Path(toString())
         .normalize()
         .let(rootPath::relativize)
+
+class UsersRepo(
+    private val dataFolder: Path,
+) {
+
+    private val cacheLock = ReentrantReadWriteLock()
+    private val cache = mutableListOf<String>()
+
+    fun isAccessGranted(email: String): Boolean {
+        return cacheLock.read {
+            email in cache
+        }
+    }
+
+    fun grantAccessTo(email: String) {
+        dataFolder.resolve(email).createFile()
+        reloadCache()
+    }
+
+    private fun reloadCache() {
+        cacheLock.write {
+            cache.clear()
+
+            Files.list(dataFolder)
+                .forEach { cache.add(it.name) }
+        }
+    }
+}
+
+class LoginRepo(
+    private val dataFolder: Path,
+) {
+
+    fun getEmailForCode(code: String): String? {
+        return dataFolder.resolve(code)
+            .takeIf { it.exists() }
+            ?.readText()
+    }
+
+    fun saveCodeFor(email: String, code: String) {
+        codeFile(code).writeText(email)
+    }
+
+    fun markCodeAsUsed(code: String) {
+        val originalFile = codeFile(code)
+        if (originalFile.exists()) {
+            val newFile = originalFile.resolveSibling("${originalFile.name}.used")
+            originalFile.moveTo(newFile)
+        }
+    }
+
+    private fun codeFile(code: String): Path =
+        dataFolder.resolve(code)
+}

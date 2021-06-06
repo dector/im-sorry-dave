@@ -1,0 +1,12 @@
+{
+  port: 9090
+  host: localhost
+  jwtSecret: weak-secret
+
+  servingFolder: public
+  dataFolder: data
+
+  accept: {
+    hosts: [ "example.com" ]
+  }
+}
