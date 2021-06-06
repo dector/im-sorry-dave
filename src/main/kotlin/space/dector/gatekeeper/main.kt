@@ -92,8 +92,7 @@ private fun interceptRequest(
 
 private fun respondWithFileContent(uri: Uri, servingFolder: Path): Response {
     val file = run {
-        val pathToFile = uri.toString().trimStart('/')
-
+        val pathToFile = uri.toSecureRelativePath()
         servingFolder.resolve(pathToFile)
             .let { if (it.isDirectory()) it.resolve("index.html") else it }
     }
@@ -340,3 +339,9 @@ class EmailService {
         println("Login with: $loginUrl")
     }
 }
+
+private val rootPath = Path("/")
+fun Uri.toSecureRelativePath(): Path =
+    Path(toString())
+        .normalize()
+        .let(rootPath::relativize)
